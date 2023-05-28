@@ -51,7 +51,7 @@ int __insert(struct node* curr, struct node* pf){
         if (strcmp(tmp->filename, pf->filename) < 0) {
             last = tmp;
             tmp = tmp->next;
-        } else if (strcmp(tmp->filename, pf->filename) == 0 && last->type == pf->type) {
+        } else if (strcmp(tmp->filename, pf->filename) == 0 && tmp->type == pf->type) {
             free(pf);
             return 0;
         } else {
