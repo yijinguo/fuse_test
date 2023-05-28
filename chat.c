@@ -27,6 +27,8 @@
 
 struct node* root;
 
+int signal; //=0: 非chat系统
+
 struct node* find_node(const char *path){
 	printf("find_node:%s\n", path);
 	if (strcmp(path, "/") == 0) return root;
@@ -42,7 +44,6 @@ struct node* find_node(const char *path){
 		free(node_name);
         if (!tmp) return NULL;
 	}
-	printf("%s\n", tmp->filename);
     return tmp;
 }
 
@@ -50,6 +51,7 @@ struct node* find_node(const char *path){
 static void *chat_init(struct fuse_conn_info *conn,
 			struct fuse_config *cfg)
 {
+    signal = 1;
 	(void) conn;
 	cfg->kernel_cache = 1;
 	root = malloc(sizeof(struct node));
@@ -64,7 +66,7 @@ static int chat_getattr(const char *path, struct stat *stbuf,
 			 struct fuse_file_info *fi)
 {
     int res = 0;
-    printf("%s: %s\n", __FUNCTION__, path);
+    printf("chat_getattr: %s\n", path);
     memset(stbuf, 0, sizeof(struct stat));
 
 	struct node *pf = find_node(path);
@@ -101,7 +103,7 @@ static int chat_mkdir(const char *path, mode_t mode)
     if(doc_name[strlen(doc_name) - 1] == '/') doc_name[strlen(doc_name) - 1] = '\0';
     char* name = strrchr(doc_name,'/') + 1;
     struct node* pf = __new(name, 0);
-    printf("mkdir-insert: %s\n", name);
+    //printf("mkdir-insert: %s\n", name);
     if(__insert(curr, pf) == 1) return 0;
     else return -EEXIST;
 }
@@ -123,11 +125,11 @@ static int chat_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     struct node* head = tmp->sons;
     if(head == NULL) puts("ls: This dictionary is empty.");
     while(head != NULL){
-        printf("%s ",head->filename);
+        //printf("%s ",head->filename);
         filler(buf, head->filename, NULL, 0, 0);
         head = head->next;
     }
-	printf("\n");
+	//printf("\n");
     return 0;
 }
 
@@ -145,7 +147,7 @@ static int chat_rmdir(const char *path)
 static int chat_create(const char *path, mode_t mode,
 					 	struct fuse_file_info *fi)
 {
-    puts("chat_create!");
+    printf("chat_create: %s\n", path);
     char dictionary[strlen(path)+1];
 	strcpy(dictionary, path);
 	dictionary[strlen(path)] = '\0';
@@ -154,15 +156,14 @@ static int chat_create(const char *path, mode_t mode,
 		dictionary[i] = '\0';
 	}
     struct node *curr = find_node(dictionary);
-    printf("%s\n", dictionary);
-    //free(dictionary);
+    //printf("%s\n", dictionary);
     if(curr == NULL) return -ENOENT;
 
     char file_name[strlen(path) + 1];
     strcpy(file_name,path);
     //if (file_name[strlen(file_name)-1] == '/') return -EISDIR;
     char* name = strrchr(file_name,'/') + 1;
-    printf("%s\n", name);
+    //printf("%s\n", name);
 	if (strlen(name) >= NAME_LENTH-1) return -EFBIG;
 
     struct node* new_file = __new(name, 1);
@@ -179,6 +180,45 @@ static int chat_unlink(const char *path)
     else return -ENOENT;
 }
 
+static void add_contents(struct node *target, const char *buf, size_t size, off_t offset)
+{
+    int l = strlen(target->contents);
+    char *tmp = malloc(sizeof(char) * (l+1));
+    strcpy(tmp, target->contents);
+    target->contents = malloc(sizeof(char) * (l + size + offset + 1));
+    memcpy(target->contents, tmp, l);
+    memcpy(target->contents + l + offset, buf, size);
+    //printf("%s\n",target->contents);
+}
+
+static void write_opposite(const char *path, const char *buf, size_t size, off_t offset)
+{
+    char *chat_path, *send_path, *receive, *send;
+    chat_path = malloc(sizeof(char) * (strlen(path)+1));
+    send_path = malloc(sizeof(char) * (strlen(path)+1));
+    strcpy(chat_path, path);
+    strcpy(send_path, path);
+    chat_path[strlen(path)] = send_path[strlen(path)] = '\0';
+    int flag = 0;
+    for (int i = strlen(path); i > 0; --i) {
+        if (flag == 0) chat_path[i] = send_path[i] = '\0';
+        else if (flag == 1) chat_path[i] = '\0';
+        else if (flag == 2) break;
+        if (path[i] == '/') flag++;
+    }
+    char *tmp = malloc(sizeof(char) * (strlen(path) + 1));
+    strcpy(tmp, path);
+    receive = strrchr(tmp, '/') ;
+    send = strrchr(send_path, '/');
+    strcat(chat_path, receive);
+    strcat(chat_path, send);
+    printf("receive_path: %s\n", chat_path);
+    struct node *target = find_node(chat_path);
+    char *t_buf = malloc(sizeof(char) * (strlen(buf) + 2));
+    t_buf[0] = '>';
+    strcpy(t_buf + 1, buf);
+    add_contents(target, t_buf, size+1, offset);
+}
 
 static int chat_write(const char *path,
                        const char *buf, size_t size, off_t offset,
@@ -187,9 +227,14 @@ static int chat_write(const char *path,
     printf("chat_write: %s\n", path);
     struct node *target = find_node(path);
     if (target == NULL || target->type == 0) return -ENOENT;
-    target->contents = malloc(sizeof(char) * (size + offset + 1));
-    memcpy(target->contents + offset, buf, size);
-    printf("%s\n",target->contents);
+    if (signal == 0) {
+        target->contents = malloc(sizeof(char) * (size + offset + 1));
+        memcpy(target->contents + offset, buf, size);
+        printf("%s\n",target->contents);
+    } else {
+        add_contents(target, buf, size, offset);
+        write_opposite(path, buf, size, offset);
+    }
     return size;
 }   
  
@@ -203,7 +248,6 @@ static int chat_read(const char *path,
     if (target->contents == NULL) return 0;
 
     int len = strlen(target->contents);
-    printf("%d\n",len);
     if (offset < len){
         if (offset + size > len) size = len - offset;
         memcpy(buf, target->contents + offset, size);
@@ -211,9 +255,12 @@ static int chat_read(const char *path,
         size = 0;
     }
     return size;
-    
 }
 
+static int chat_utimens (const char *path, const struct timespec tv[2],
+			 struct fuse_file_info *fi){
+    return 0;
+}
 
 static struct fuse_operations chat_oper = {
 	.init       = chat_init,
@@ -225,6 +272,7 @@ static struct fuse_operations chat_oper = {
 	.readdir	= chat_readdir,
 	.write 		= chat_write,
 	.read		= chat_read,
+    .utimens    = chat_utimens,
 };
 
 int main(int argc, char *argv[])
